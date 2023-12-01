@@ -1,0 +1,184 @@
+Steps:
+=======
+
+1. Add spring-boot-starter-security in pom.xml
+
+2. add endpoints in our spring boot project. (For example: /hello)
+
+3. add MyUserDetailService implements UserDetailsService (mark it as @Service)
+		-> implement a method:  UserDetails loadUserByUsername(..) method
+		-> now get the user from the database or wherever the user is stored and use it
+		-> return new UserDetails(...) (of spring security class) with username, password and authorities
+
+4. Create a class WebSecurityConfigurer and extends that class with WebSecurityConfigurerAdapter class (@EnableWebSecurity)
+	-> autowire MyUSerDetailsSerivice inside WebSecurityConfigurer
+	-> and implement: void configure(AuthenticationManagerBuilder auth) method
+	-> inside that method add auth.userDetailSerice(myUserDetailService)
+
+	-> Add a password encoder:
+		@Bean
+		public PasswordEncoder passwordEncoder() {
+			return NoOpPasswordEncoder.getInstance(); (to not create hashing of password: just basic to test)
+		}
+
+	-> Now run and test your application with given username and password with basics
+
+
+================================================================================================================================
+
+5. Now add two dependencies for JWT implementation:
+	
+	//	To create and validate JWT tokens
+	<dependency>
+		<groupId>io.jsonwebtoken</groupId>
+		<artifactId>jjwt</artifactId>
+		<version>0.9.1</version>			
+	</dependency>
+
+	// for java 9 or never version, we need to add because it has been remove from jdk prior to that versions
+	<dependency>
+		<groupId>javax.xml.bind</groupId>
+		<artifactId>jaxb-api</artifactId>
+		<version>2.3.0</version>			
+	</dependency>
+
+6. Create a JWTUtil class to abstract out all the jwt related tasks
+	
+	-> we can copy paste the boiler plate code for this class and make changes according ot our need
+	-> there we have multiple methods realted to generation of token, validate the token, token expiration etc
+	-> we can modify the expiration time of the token here
+
+7. Create /authenticate endpoint that take userid and password and returns back the jwt token
+	
+	-> Before we create the API we need to create couple of classes which form the input and output for the method which is acting as a controller
+	-> AuthenticationRequest (model class)
+		
+		public class AuthenticationRequest {
+			private String username;
+			private String password;
+			
+			// no arg constructor
+			// arg constructor
+			// setters and getters
+		}
+
+	-> AuthenticationResponse (model class)
+		
+		public class AuthenticationResponse {
+			private final String jwt;
+			
+			// getter
+			// arg constructor
+		}
+	
+	-> Autowire AuthenticationManager to be used in jwt token generation (Define a bean as well in configuration class for this :
+		inside WebSecutityConfigurer class)
+		
+		@Override
+		@Bean
+		public AuthenticationManager authenticationManagerBean() throws Exception {
+			return super.authenticationManagerBean();
+		}
+
+	-> Inject UserDetailSerice to get user details
+
+	-> Inject AuthenticationManager to authenticate username and password
+
+	-> Inject JWTTokenUtil to generate token after giving user details
+
+	-> Now create /authentication endpoint
+	
+		@RequestMapping(value = "/authentication", method = RequestMethod.POST)
+		public ResponseEntity<?> createAuthenticationToken(@RequestBody AuthenticationRequest authenticationRequest) throws Exception {
+			try {
+				authenticationManager.authenticate(new UserNameAndPasswordAuthenticationToken(authenticationRequest.getUserName,
+				authenticationReuest.getPassword());
+			} catch(BadCredentialException e) {
+				throw new Exception("Incorrect username or password", e);
+			}
+			
+			// get the user details from userDetailsService
+
+			final UserDetails userDetails = userDetailsService.loadUserByUserName(authenticationRequest.getUserName());
+
+			// generate jwt token forn given user details
+			
+			final String jwt = jwtTokenUtil.generateToken(userDetails);
+
+			// now just return the response
+
+			return new ResponseEntity.ok(new AuthenticationRespons(jwt));
+
+		}
+
+8. Now come to WebConfiguerer class and specify that when anybody hit the request for /authenticate API endpoint that should not be authenticated
+	
+	-> Now implement another method: void configure(HttpSecurity http) method
+		
+		protected void configure(HttpSecurity http) throws Exception {
+			http.csrf().disable()
+			.authorizeReuests().antMatchers("/authenticate").permitAll()
+			.anyRequest().authenticated();
+		}
+
+	-> Now run and test your application for token generation
+
+==================================================================================================================================================
+
+9. Now create a filter to intercept every request to authenticate the API endpoints
+	
+	-> JWTRequestFilter
+	-> Extends our class with OncePerRequestFilter class
+	-> emplement method:  doFilterInternal(....)
+	-> Autowire MyUserDeatilsService and JWTUtil inside JWTRequestFilter class
+
+		@Component
+		class JWTRequestFilter extends OncePerRequestFilter {
+
+			@Autowired
+			private MyUserDetailsService userDetailsService;
+
+			@Autowired
+			private JWTUtils jwtUtils;
+			
+			@Override
+			protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) {
+				
+				final String authorizationHeader = request.getHeader("Authorization");
+
+				String userName = null;
+				String jwt = null;
+				
+				// verify that authorization header is not null and it starts with "Bearer"
+
+				if(authorizationHeader != null && authorizationHeader.startsWith("Bearer ")) {
+					jwt = authorizationHeader.subString(7);
+					userName = jwtUtil.extractUserName(jwt);
+				}
+
+				if(userName != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+					UserDetails userDetails = this.userDetailsService.loadUserByUserName(userName);
+
+					if(jwtUtil.validateToken(jwt, userDetails)) {
+						UserNamePasswordAuthenticationToken userNamePasswordAuthenticationToken = 
+								new UserNamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+						userNamePasswordAuthenticationToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+						SecurityContextHolder.getContext().setAuthentication(userNamePasswordAuthenticationToken);
+					}
+				}
+				chain.doFilter(request, response);
+			}
+		}
+
+10. Now go to WebSecurityConfigure class and update configure(HttpSecurity http) method
+	
+	-> autowire JWTRequestFilter class	
+	
+	-> add at last:
+		.and().sessionManagement()
+		.sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+		http.addFilterBefore(jwtRequestFilter, UserNamePasswordAuthenticationFilter.class);
+	
+	-> Now Run and test the application
+	
+	
